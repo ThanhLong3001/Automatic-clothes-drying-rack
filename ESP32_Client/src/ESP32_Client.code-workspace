@@ -1,0 +1,12 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"name": "sensor_rain",
+			"path": "../../../check/sensor_rain"
+		}
+	],
+	"settings": {}
+}

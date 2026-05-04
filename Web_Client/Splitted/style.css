@@ -1,0 +1,191 @@
+/* Page switcher visibility */
+.page { display: none; }
+.page.active { display: block; }
+
+/* === Theme & base === */
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+
+:root{
+  --card-shadow: 0 8px 24px rgba(15,23,42,.06);
+  --lift-shadow: 0 12px 28px rgba(15,23,42,.12);
+  --ring: 0 0 0 3px rgba(59,130,246,.25); /* focus ring xanh */
+}
+
+html, body { scroll-behavior: smooth; }
+body { font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+
+/* Nền nhẹ nhàng bằng radial-gradients */
+body::before {
+  content: "";
+  position: fixed; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(600px 300px at 10% -10%, rgba(99,102,241,.12), transparent 60%),
+    radial-gradient(600px 300px at 100% 0%, rgba(59,130,246,.08), transparent 60%);
+}
+
+/* Chuyển trang mượt */
+.page.active { animation: pageIn .28s ease-out; }
+@keyframes pageIn { from {opacity:0; transform: translateY(6px)} to {opacity:1; transform:none} }
+
+/* Sidebar trong suốt nhẹ */
+aside { backdrop-filter: blur(8px); }
+
+/* Nav button mượt */
+.nav-btn { transition: transform .15s ease, background-color .2s ease, color .2s ease; }
+.nav-btn:hover { transform: translateX(2px); }
+/* Khi đang active (JS đã toggle bg-slate-900) thì thêm đổ bóng nhẹ */
+.nav-btn.bg-slate-900 { box-shadow: var(--card-shadow); }
+
+/* Card nâng cấp bóng & hover-lift (không đổi layout) */
+.bg-white.rounded-2xl.shadow-sm.border {
+  transition: transform .18s ease, box-shadow .18s ease;
+  box-shadow: var(--card-shadow);
+}
+.bg-white.rounded-2xl.shadow-sm.border:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--lift-shadow);
+}
+
+/* Nút tròn bo mượt, có focus ring & nhún khi click */
+button.rounded-xl {
+  transition: transform .15s ease, box-shadow .15s ease, background-color .2s ease, color .2s ease;
+}
+button.rounded-xl:focus-visible { outline: none; box-shadow: var(--ring); }
+button.rounded-xl:active { transform: translateY(1px); }
+
+/* Toast show/ẩn mượt (khớp class toast-enter/toast-show bạn đang dùng) */
+#toast-container .toast-enter {
+  opacity: 0; transform: translateY(-6px);
+  transition: all .22s ease;
+}
+#toast-container .toast-enter.toast-show {
+  opacity: 1; transform: translateY(0);
+}
+
+/* Nút trong schedule mượt hơn */
+#schedule-list .sched-delete,
+#schedule-list .sched-run-now { transition: background-color .2s ease, color .2s ease; }
+/* === Biến theme nhẹ nhàng === */
+:root{
+  --card-shadow: 0 8px 24px rgba(15,23,42,.06);
+  --lift-shadow: 0 12px 28px rgba(15,23,42,.12);
+  --ring: 0 0 0 3px rgba(59,130,246,.25);
+  --pattern-color: rgba(30,41,59,.06);      /* màu hoa văn */
+  --pattern-color-strong: rgba(99,102,241,.12);
+}
+
+/* === Nền có hoa văn: gradient + lưới chấm rất nhẹ === */
+body::before{
+  content:"";
+  position:fixed; inset:0; pointer-events:none; z-index:-2;
+  background:
+    radial-gradient(600px 300px at 10% -10%, rgba(99,102,241,.10), transparent 60%),
+    radial-gradient(600px 300px at 100% 0%, rgba(14,165,233,.10), transparent 60%);
+}
+body::after{
+  content:"";
+  position:fixed; inset:0; pointer-events:none; z-index:-1;
+  background-image:
+    radial-gradient(var(--pattern-color) 1px, transparent 1px);
+  background-size: 28px 28px;               /* khoảng cách chấm */
+  opacity:.35;                               /* đậm/nhạt hoa văn nền */
+  mix-blend-mode:multiply;                   /* hòa trộn tinh tế */
+}
+
+/* === Sidebar thêm hoa văn sọc dọc rất mảnh === */
+aside{ backdrop-filter: blur(8px); position: relative; }
+aside::after{
+  content:"";
+  position:absolute; inset:0 0 0 auto; width:100%;
+  background-image: repeating-linear-gradient(
+    90deg,
+    transparent 0 22px,
+    rgba(15,23,42,.04) 22px 23px
+  );
+  pointer-events:none;
+}
+
+/* === Card: nâng bóng + 2 lớp hoa văn (chéo + vệt sáng) === */
+.bg-white.rounded-2xl.shadow-sm.border{
+  position: relative; overflow: hidden;
+  transition: transform .18s ease, box-shadow .18s ease;
+  box-shadow: var(--card-shadow);
+}
+.bg-white.rounded-2xl.shadow-sm.border:hover{
+  transform: translateY(-2px);
+  box-shadow: var(--lift-shadow);
+}
+/* vân chéo rất nhẹ */
+.bg-white.rounded-2xl.shadow-sm.border::before{
+  content:"";
+  position:absolute; inset:0; pointer-events:none;
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      var(--pattern-color) 0 2px,
+      transparent 2px 12px
+    );
+  opacity:.18;
+}
+/* vệt sáng chéo góc */
+.bg-white.rounded-2xl.shadow-sm.border::after{
+  content:"";
+  position:absolute; inset:-30% -10% auto auto; height:60%; width:60%;
+  background: radial-gradient(closest-side, rgba(255,255,255,.65), transparent 70%);
+  transform: rotate(-12deg);
+  pointer-events:none;
+}
+/* Ảnh nền toàn trang + lớp tối nhẹ */
+body {
+  /* thay đường dẫn ảnh của bạn ở đây */
+  --bg-url: url("1.jpg"); /* ví dụ: cùng thư mục => "background.jpg" */
+
+  background-image:
+    linear-gradient(rgba(2, 6, 23, .35), rgba(2, 6, 23, .35)), /* lớp tối */
+    var(--bg-url);
+  background-size: cover;
+  background-position: center;
+  background-attachment: fixed; /* hiệu ứng parallax nhẹ */
+}
+
+/* Nếu bạn đang có body::before/body::after tạo hoa văn,
+   mà thấy hơi “đè” ảnh, giảm opacity xuống */
+body::before { opacity: .08; }  /* tùy chỉnh theo mắt nhìn */
+body::after  { opacity: .12; }
+
+/* === Banner gradient “thở” nhẹ (không đổi layout) === */
+#page-dashboard .bg-gradient-to-r{
+  background-size: 200% 200% !important;
+  animation: gradientShift 16s ease infinite;
+  position: relative; overflow:hidden;
+}
+#page-dashboard .bg-gradient-to-r::after{
+  content:"";
+  position:absolute; inset:0; pointer-events:none;
+  background:
+    radial-gradient(600px 220px at 85% -15%, rgba(255,255,255,.22), transparent 60%),
+    radial-gradient(400px 160px at 10% 110%, rgba(255,255,255,.10), transparent 60%);
+}
+@keyframes gradientShift{
+  0%{ background-position: 0% 50%; }
+  50%{ background-position: 100% 50%; }
+  100%{ background-position: 0% 50%; }
+}
+
+/* === Nút: ring + nhún khi click === */
+button.rounded-xl{
+  transition: transform .15s ease, box-shadow .15s ease, background-color .2s ease, color .2s ease;
+}
+button.rounded-xl:focus-visible{ outline:none; box-shadow: var(--ring); }
+button.rounded-xl:active{ transform: translateY(1px); }
+
+/* === Nav: mượt hơn một chút === */
+.nav-btn{ transition: transform .15s ease, background-color .2s ease, color .2s ease; }
+.nav-btn:hover{ transform: translateX(2px); }
+.nav-btn
+
+/* Scrollbar gọn (WebKit) */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(100,116,139,.35); border-radius: 999px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(100,116,139,.55); }

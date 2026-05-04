@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ClothesRack — Dashboard & History</title>
+  <!-- TailwindCSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Chart.js + date adapter -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+  <link rel="stylesheet" href="style.css">
+
+  <script>
+    // ---- Flexible server URL detection ----
+    (function () {
+      const qs = new URLSearchParams(location.search);
+      const fromQuery = qs.get('server'); // ex: ?server=http://192.168.1.50:3000
+      const fromWindow = (typeof window.serverURL === 'string' && window.serverURL.trim()) ? window.serverURL.trim() : '';
+      const guess = (location.protocol.startsWith('http')) ? location.origin : '';
+      const fallback = 'http://localhost:3000';
+      function norm(u){ return (u || '').replace(/\/+$/,''); }
+      window.__SERVER_URL__ = norm(fromWindow || fromQuery || guess || fallback);
+    })();
+  </script>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800">
+  <script>
+    // ====== CONFIG ======
+    const serverURL = window.__SERVER_URL__;
+
+    // Storage keys / retention
+    const HISTORY_KEY = "clothesrack_history_v1";
+    const EVENTS_KEY  = "clothesrack_events_v1";
+    const SCHEDULES_KEY = "clothesrack_schedules_v1"; // NEW: hẹn giờ
+    const HISTORY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000; // 7 ngày
+    const EVENTS_RETENTION_MS  = 7 * 24 * 60 * 60 * 1000;
+    const BUCKET_MINUTES = 15; // Lấy mẫu 15 phút
+  </script>
+
+  <!-- Toast container -->
+  <div id="toast-container" class="fixed top-4 right-4 z-50 space-y-2"></div>
+
+  <div class="flex min-h-screen">
+    <!-- Sidebar -->
+    <aside class="w-60 bg-white/80 border-r border-slate-200 backdrop-blur p-4 flex flex-col">
+      <div class="flex items-center gap-2 text-slate-900 mb-4">
+        <div class="h-8 w-8 rounded-xl bg-slate-900 text-white grid place-items-center text-sm font-semibold">CR</div>
+        <div>
+          <div class="text-base font-semibold">ClothesRack</div>
+          <div class="text-xs text-slate-500">MQTT • ESP32</div>
+        </div>
+      </div>
+
+      <nav class="space-y-1" id="nav">
+        <button data-target="page-dashboard" class="nav-btn w-full text-left px-3 py-2 rounded-lg hover:bg-slate-100 active:bg-slate-100 font-medium text-slate-700">
+          📊 Dashboard
+        </button>
+        <button data-target="page-history" class="nav-btn w-full text-left px-3 py-2 rounded-lg hover:bg-slate-100 font-medium text-slate-700">
+          📈 Lịch sử mưa
+        </button>
+      </nav>
+
+      <div class="mt-auto text-xs text-slate-500">
+        <div>Server: <span id="server-label" class="font-mono"></span></div>
+        <div>Trạng thái: <span id="conn-status" class="font-medium">&#9679; Kết nối...</span></div>
+        <div id="https-warning" class="hidden mt-2 text-amber-600">⚠️ Trang https không gọi được http. Hãy mở trang bằng http hoặc proxy HTTPS cho server.</div>
+      </div>
+    </aside>
+
+    <!-- Main content -->
+    <main class="flex-1 p-6">
+      <!-- Page: Dashboard -->
+      <section id="page-dashboard" class="page active">
+        <!-- Banner title -->
+        <div class="mb-6 p-4 rounded-2xl bg-gradient-to-r from-sky-500 via-indigo-500 to-violet-500 text-white shadow-sm">
+          <div class="flex items-center justify-between">
+            <h1 class="text-lg sm:text-xl font-semibold tracking-wide">BẢNG ĐIỀU KHIỂN GIÀN PHƠI TỰ ĐỘNG</h1>
+            <div class="text-xs sm:text-sm text-white/90">Cập nhật mỗi 2 giây • <span id="last-updated">--:--:--</span></div>
+          </div>
+        </div>
+
+        <!-- Stats bar (feature #1) -->
+        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-5 mb-6">
+          <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex items-center gap-3">
+            <div class="text-2xl">🌡️</div>
+            <div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-500">Nhiệt độ cảm nhận</div>
+              <div id="stat-heat-index" class="text-base font-semibold">--</div>
+            </div>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex items-center gap-3">
+            <div class="text-2xl">🧊</div>
+            <div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-500">Điểm sương</div>
+              <div id="stat-dew-point" class="text-base font-semibold">--</div>
+            </div>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex items-center gap-3">
+            <div class="text-2xl">☔️</div>
+            <div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-500">Lần mưa gần nhất</div>
+              <div id="stat-last-rain" class="text-base font-semibold">--</div>
+            </div>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex items-center gap-3">
+            <div class="text-2xl">🧺</div>
+            <div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-500">Thời gian phơi liên tục</div>
+              <div id="stat-drying" class="text-base font-semibold">--</div>
+            </div>
+          </div>
+          <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex items-center gap-3">
+            <div class="text-2xl">🟢</div>
+            <div>
+              <div class="text-[11px] uppercase tracking-wide text-slate-500">Kết nối</div>
+              <div id="stat-conn" class="text-base font-semibold">Đang kiểm tra…</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Cards -->
+        <div class="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+            <div class="text-slate-500 text-sm">🌡️ Nhiệt độ</div>
+            <div class="mt-2 text-3xl font-semibold"><span id="temp">--</span><span class="text-base font-medium"> °C</span></div>
+            <div id="temp-trend" class="mt-1 text-xs text-slate-500">--</div>
+          </div>
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+            <div class="text-slate-500 text-sm">💧 Độ ẩm</div>
+            <div class="mt-2 text-3xl font-semibold"><span id="hum">--</span><span class="text-base font-medium"> %</span></div>
+            <div id="hum-trend" class="mt-1 text-xs text-slate-500">--</div>
+          </div>
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+            <div class="text-slate-500 text-sm">☔️ Trạng thái thời tiết</div>
+            <div class="mt-2 text-3xl font-semibold"><span id="rain">--</span></div>
+          </div>
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+            <div class="text-slate-500 text-sm">Trạng thái giàn</div>
+            <div class="mt-2 text-3xl font-semibold"><span id="state">--</span></div>
+          </div>
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+            <div class="text-slate-500 text-sm">Chế độ</div>
+            <div class="mt-2 text-3xl font-semibold"><span id="mode-label">--</span></div>
+          </div>
+        </div>
+
+        <!-- Actions -->
+        <div class="mt-6 grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+            <div class="text-slate-700 font-medium mb-3">Điều khiển thủ công</div>
+            <div class="flex gap-3">
+              <button id="btn-open" class="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300">Mở</button>
+              <button id="btn-close" class="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300">Đóng</button>
+            </div>
+          </div>
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+            <div class="text-slate-700 font-medium mb-3">Chế độ</div>
+            <div class="flex gap-3">
+              <button id="btn-auto"  class="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300">Auto</button>
+              <button id="btn-manual" class="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300">Manual</button>
+            </div>
+          </div>
+	 <!-- NEW: Config length card -->
+<div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4">
+  <div class="text-slate-700 font-medium mb-3">Cài đặt chiều dài dây</div>
+  <div class="grid grid-cols-[1fr_auto] gap-3">
+    <input id="line-length-mm" type="number" min="100" step="10"
+           placeholder="Chiều dài (mm) — ví dụ 3000"
+           class="w-full border rounded-lg px-3 py-2" />
+    <button id="btn-save-config"
+            class="px-4 py-2 rounded-xl bg-slate-200 hover:bg-slate-300">
+      Lưu cài đặt
+    </button>
+  </div>
+  <div class="mt-1 text-xs text-slate-500">
+    Nhập chiều dài dây phơi theo milimet (3 mét ⇒ 3000). Lưu xong nút sẽ chuyển sang màu xanh.
+  </div>
+</div>
+          <!-- NEW: Scheduler card -->
+          <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 md:col-span-2 lg:col-span-3">
+            <div class="flex items-center justify-between">
+              <div class="text-slate-700 font-medium mb-3">⏰ Hẹn giờ phơi / thu</div>
+              <button id="btn-clear-past-schedules" class="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg">Dọn lịch cũ</button>
+            </div>
+            <div class="grid gap-3 sm:grid-cols-[1fr_auto_auto] items-end">
+              <label class="text-sm">
+                Thời gian
+                <input type="datetime-local" id="sched-dt" class="mt-1 w-full border rounded-lg px-2 py-2" />
+              </label>
+              <label class="text-sm">
+                Hành động
+                <select id="sched-action" class="mt-1 w-full border rounded-lg px-2 py-2">
+                  <option value="open">Phơi (Mở)</option>
+                  <option value="close">Thu (Đóng)</option>
+                </select>
+              </label>
+              <button id="btn-add-schedule" class="px-4 py-2 rounded-xl bg-slate-900 text-white hover:bg-slate-800">Thêm hẹn giờ</button>
+            </div>
+            <div class="mt-2 text-xs text-slate-500">
+              Lưu ý: Hẹn giờ chạy khi trang đang mở. Nếu trang tắt, lệnh sẽ được gửi ngay khi bạn mở lại (trong giới hạn an toàn).
+            </div>
+            <div id="schedule-list" class="mt-3 divide-y divide-slate-200"></div>
+          </div>
+          <!-- END Scheduler card -->
+        </div>
+      </section>
+
+      <!-- Page: History -->
+      <section id="page-history" class="page">
+        <div class="flex items-center justify-between mb-4">
+          <h1 class="text-xl font-semibold">Lịch sử (mỗi 15 phút)</h1>
+          <div class="flex items-center gap-2 text-sm text-slate-500">
+            <span>Khung thời gian:</span>
+            <select id="range-select" class="border rounded-lg px-2 py-1">
+              <option value="24h">24 giờ</option>
+              <option value="72h">3 ngày</option>
+              <option value="7d" selected>7 ngày</option>
+            </select>
+          </div>
+        </div>
+
+        <p class="text-sm text-slate-600 mb-4">Biểu đồ đường cho nhiệt độ và độ ẩm. Lịch sử mưa (0/1) hiển thị bằng cột phía dưới để dễ đối chiếu các khoảng có mưa.</p>
+
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 mb-6">
+          <canvas id="chart-temp-hum" height="120"></canvas>
+        </div>
+        <div class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 mb-6">
+          <canvas id="chart-rain" height="80"></canvas>
+        </div>
+
+        <!-- Event Timeline (feature #8) -->
+        <div class="mb-2 flex items-center justify-between">
+          <h2 class="text-lg font-semibold">Dòng thời gian sự kiện</h2>
+          <div class="flex gap-2">
+            <button id="btn-clear-events" class="px-3 py-1.5 rounded-lg text-sm bg-slate-200 hover:bg-slate-300">Xoá timeline</button>
+          </div>
+        </div>
+        <div id="timeline" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-4"></div>
+
+        <div class="mt-4 text-xs text-slate-500">Cập nhật lịch sử theo mốc 00, 15, 30, 45 mỗi giờ. Lưu tối đa 7 ngày trên trình duyệt (localStorage).</div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Team badge bottom-right -->
+  <div class="fixed bottom-3 right-4 text-base sm:text-lg text-slate-700 bg-white/80 backdrop-blur border border-slate-200 shadow-sm px-3 py-2 rounded-xl">
+    <div class="font-semibold">Nhóm thực hiện : Nhóm 06</div>
+    <div>Hoàng Mạnh Hùng • Võ Thành Long • Phạm Quang Phúc</div>
+  </div>
+
+  <script>
+    // ===== Utilities =====
+    const $ = (sel) => document.querySelector(sel);
+    const $$ = (sel) => Array.from(document.querySelectorAll(sel));
+
+    function fmtTime(d) {
+      const pad = (n) => String(n).padStart(2, '0');
+      return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    function fmtDateTime(ts){ const d=new Date(ts); return d.toLocaleString(); }
+
+    function toTitle(s) {
+      if (s == null) return '--';
+      const str = String(s);
+      return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
+    }
+
+    function setBtnActive(btn, active) {
+      if (!btn) return;
+      btn.classList.remove('bg-slate-900', 'hover:bg-slate-800');
+      btn.classList.toggle('bg-green-600', active);
+      btn.classList.toggle('hover:bg-green-700', active);
+      btn.classList.toggle('text-white', active);
+      btn.classList.toggle('bg-slate-200', !active);
+      btn.classList.toggle('hover:bg-slate-300', !active);
+    }
+
+    function updateModeUI(mode) {
+      const m = String(mode).toLowerCase();
+      setBtnActive($('#btn-auto'), m === 'auto');
+      setBtnActive($('#btn-manual'), m === 'manual');
+      $('#mode-label').textContent = toTitle(m);
+    }
+
+    function formatRackState(raw) {
+      const s = String(raw ?? '').toLowerCase();
+      if (s === 'open') return 'Đang phơi';
+      if (s === 'closed' || s === 'close') return 'Đang thu';
+      return raw ?? '--';
+    }
+
+    function floorToBucket(date, minutes = BUCKET_MINUTES) {
+      const d = new Date(date);
+      d.setMilliseconds(0);
+      d.setSeconds(0);
+      d.setMinutes(Math.floor(d.getMinutes() / minutes) * minutes);
+      return d; // Date aligned to bucket start
+    }
+
+    function retentionFilter(arr, ms) {
+      const now = Date.now();
+      return arr.filter(p => now - p.t <= ms);
+    }
+
+    // ---- History storage ----
+    function loadHistory() {
+      try {
+        const raw = localStorage.getItem(HISTORY_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return arr.map(p => ({ t: +p.t, temp: +p.temp, hum: +p.hum, rain: +p.rain || 0 }));
+      } catch (e) {
+        console.warn('Lỗi đọc lịch sử:', e);
+        return [];
+      }
+    }
+    function saveHistory(arr) {
+      try { localStorage.setItem(HISTORY_KEY, JSON.stringify(arr)); }
+      catch (e) { console.warn('Lỗi lưu lịch sử:', e); }
+    }
+    function upsertBucket(arr, point) {
+      const bucketStart = +floorToBucket(point.t);
+      const idx = arr.findIndex(p => +floorToBucket(p.t) === bucketStart);
+      if (idx >= 0) arr[idx] = point; else arr.push(point);
+      return arr.sort((a, b) => a.t - b.t);
+    }
+	
+    // ===== Config: save line length (mm) =====
+function setSaveBtnState(saved) {
+  const btn = document.getElementById('btn-save-config');
+  if (!btn) return;
+  btn.classList.toggle('bg-green-600', saved);
+  btn.classList.toggle('hover:bg-green-700', saved);
+  btn.classList.toggle('text-white', saved);
+  btn.classList.toggle('bg-slate-200', !saved);
+  btn.classList.toggle('hover:bg-slate-300', !saved);
+  btn.textContent = saved ? 'Đã lưu' : 'Lưu cài đặt';
+}
+
+async function saveLineLength() {
+  const input = document.getElementById('line-length-mm');
+  const val = Number(input.value);
+  if (!Number.isFinite(val) || val <= 100) {
+    showToast('Vui lòng nhập chiều dài hợp lệ (> 100mm)', 'warning');
+    setSaveBtnState(false);
+    return;
+  }
+  try {
+    // server.js của bạn đã có /config publish tới topic clothesrack/config
+    await postJSON('/config', { line_mm: val });
+    setSaveBtnState(true);
+    showToast('Đã lưu chiều dài dây', 'success');
+  } catch (e) {
+    setSaveBtnState(false);
+    showToast('Lưu cấu hình thất bại: ' + e.message, 'warning');
+  }
+}
+
+    // ---- Events storage (feature #8) ----
+    function loadEvents(){
+      try{ const raw=localStorage.getItem(EVENTS_KEY); const arr = raw? JSON.parse(raw): []; return arr.map(e=>({ ...e, t:+e.t })); }
+      catch(e){ return []; }
+    }
+    function saveEvents(arr){
+      try{ localStorage.setItem(EVENTS_KEY, JSON.stringify(arr)); } catch(e){}
+    }
+    function pushEvent(evt, {toast=true}={}){
+      const arr = retentionFilter(loadEvents().concat(evt), EVENTS_RETENTION_MS).sort((a,b)=>a.t-b.t);
+      saveEvents(arr);
+      renderTimeline();
+      if (toast) showToast(evt.title, evt.type);
+    }
+
+    // ===== Calculations for stats (feature #1) =====
+    function heatIndexC(T, RH){
+      if (!Number.isFinite(T) || !Number.isFinite(RH)) return null;
+      // Rothfusz-like polynomial in Celsius
+      const c1=-8.784695, c2=1.61139411, c3=2.338549, c4=-0.14611605, c5=-0.012308094, c6=-0.016424828, c7=0.002211732, c8=0.00072546, c9=-0.000003582;
+      const HI = c1 + c2*T + c3*RH + c4*T*RH + c5*T*T + c6*RH*RH + c7*T*T*RH + c8*T*RH*RH + c9*T*T*RH*RH;
+      return HI;
+    }
+    function dewPointC(T, RH){
+      if (!Number.isFinite(T) || !Number.isFinite(RH)) return null;
+      const a=17.27, b=237.7; const gamma=(a*T)/(b+T) + Math.log(RH/100);
+      const Td=(b*gamma)/(a-gamma); return Td;
+    }
+    function round1(n){ return Math.round(n * 10) / 10; }
+    function formatDuration(ms){
+      if (!Number.isFinite(ms) || ms<=0) return '—';
+      const s=Math.floor(ms/1000); const d=Math.floor(s/86400); const h=Math.floor((s%86400)/3600); const m=Math.floor((s%3600)/60);
+      if (d>0) return `${d}d ${h}h ${m}m`;
+      if (h>0) return `${h}h ${m}m`;
+      return `${m}m`;
+    }
+
+    // ===== Toasts (feature #5) =====
+    function showToast(msg, type='info'){
+      const container = $('#toast-container');
+      const div = document.createElement('div');
+      const base = 'toast-enter rounded-xl px-3 py-2 text-sm shadow border bg-white flex items-center gap-2';
+      const color = type==='success' ? 'border-emerald-200' : type==='warning' ? 'border-amber-200' : 'border-slate-200';
+      const dot = type==='success' ? '🟢' : type==='warning' ? '⚠️' : 'ℹ️';
+      div.className = `${base} ${color}`;
+      div.innerHTML = `<span>${dot}</span><span>${msg}</span>`;
+      container.appendChild(div);
+      requestAnimationFrame(()=> div.classList.add('toast-show'));
+      setTimeout(()=>{
+        div.style.opacity=0; div.style.transform='translateY(-8px)';
+        setTimeout(()=>div.remove(), 250);
+      }, 3500);
+    }
+
+    // ===== Networking =====
+    async function getJSON(path, opts = {}) {
+      const url = `${serverURL}${path}`;
+      const res = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
+      if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+      return res.json();
+    }
+
+    async function postJSON(path, body) {
+      return getJSON(path, { method: 'POST', body: JSON.stringify(body) });
+    }
+
+    // ===== State =====
+    const state = {
+      current: null,
+      prev: null,
+      history: [],
+      fifteenInterval: null,
+      connOk: false,
+    };
+
+    // ===== Dashboard logic =====
+    async function fetchDataLoop() {
+      try {
+        const data = await getJSON('/data');
+        state.prev = state.current; // keep for diff
+        state.current = data;
+
+        $('#temp').textContent = (data.mTem ?? data.temp ?? '--').toString();
+        $('#hum').textContent = (data.mHum ?? data.hum ?? '--').toString();
+
+        const rainVal = (data.mRain ?? data.rain);
+        const rainEl = document.getElementById('rain');
+        if (rainVal == null) {
+          rainEl.textContent = '--';
+          rainEl.className = '';
+        } else if (Number(rainVal)) {
+          rainEl.textContent = '☔️ Có mưa';
+          rainEl.className = 'inline-flex items-center px-2 py-1 rounded-full text-sm bg-blue-50 text-blue-700';
+        } else {
+          rainEl.textContent = '🌤️ Không mưa';
+          rainEl.className = 'inline-flex items-center px-2 py-1 rounded-full text-sm bg-amber-50 text-amber-700';
+        }
+
+        $('#state').textContent = formatRackState(data.mState ?? data.state ?? '--');
+        updateModeUI(data.mMode ?? data.mode ?? '--');
+        $('#conn-status').innerHTML = '<span class="text-green-600">●</span> OK';
+        $('#last-updated').textContent = fmtTime(new Date());
+        state.connOk = true;
+
+        // Stats
+        renderStats();
+        renderTrends();
+
+        // Detect significant changes -> events + toast (#8 + #5)
+        detectAndRecordEvents(state.prev, state.current);
+      } catch (e) {
+        console.warn('fetch /data lỗi:', e);
+        if (state.connOk) {
+          pushEvent({ t: Date.now(), type:'warning', title:'Mất kết nối server' }, { toast:true });
+        }
+        state.connOk = false;
+        $('#conn-status').innerHTML = '<span class="text-amber-600">●</span> Lỗi kết nối';
+        $('#stat-conn').textContent = 'Mất kết nối';
+      } finally {
+        setTimeout(fetchDataLoop, 2000);
+      }
+    }
+
+    function detectAndRecordEvents(prev, curr){
+      if (!curr) return;
+      const now = Date.now();
+      // connection recovered
+      if (!state.connOk && curr) {
+        pushEvent({ t: now, type:'success', title:'Kết nối server khôi phục' }, { toast:true });
+      }
+      // rain
+      const pRain = Number(prev?.mRain ?? prev?.rain);
+      const cRain = Number(curr.mRain ?? curr.rain);
+      if (Number.isFinite(cRain) && cRain !== pRain) {
+        if (cRain === 1) pushEvent({ t: now, type:'warning', title:'Bắt đầu mưa ☔️' }, { toast:true });
+        if (cRain === 0) pushEvent({ t: now, type:'info',    title:'Tạnh mưa 🌤️' }, { toast:true });
+      }
+      // mode
+      const pMode = String(prev?.mMode ?? prev?.mode ?? '').toLowerCase();
+      const cMode = String(curr.mMode ?? curr.mode ?? '').toLowerCase();
+      if (cMode && pMode && cMode !== pMode) {
+        pushEvent({ t: now, type:'info', title:`Chuyển chế độ: ${toTitle(cMode)}` }, { toast:true });
+      }
+      // rack state
+      const pState = String(prev?.mState ?? prev?.state ?? '').toLowerCase();
+      const cState = String(curr.mState ?? curr.state ?? '').toLowerCase();
+      if (cState && pState && cState !== pState) {
+        const t = cState === 'open' ? 'Giàn đang phơi' : 'Giàn đang thu';
+        pushEvent({ t: now, type:'success', title: t }, { toast:true });
+      }
+    }
+
+    // Actions
+    async function sendCommand(cmd) {
+      try { await postJSON('/command', { cmd }); showToast(`Đã gửi lệnh: ${cmd==='open'?'Mở':'Đóng'}`,'success'); }
+      catch (e) { showToast('Gửi lệnh thất bại: ' + e.message, 'warning'); }
+    }
+    async function setMode(mode) {
+      try { await postJSON('/mode', { mode }); updateModeUI(mode); showToast(`Đã chuyển chế độ: ${toTitle(mode)}`,'success'); }
+      catch (e) { showToast('Đổi chế độ thất bại: ' + e.message, 'warning'); }
+    }
+
+    // ===== History logic =====
+    function addHistoryPointFromCurrent() {
+      if (!state.current) return;
+      const now = new Date();
+      const bucketed = floorToBucket(now);
+      const point = {
+        t: +bucketed,
+        temp: Number(state.current.mTem ?? state.current.temp ?? NaN),
+        hum: Number(state.current.mHum ?? state.current.hum ?? NaN),
+        rain: Number(state.current.mRain ?? state.current.rain ?? 0),
+      };
+      if (Number.isNaN(point.temp) || Number.isNaN(point.hum)) return;
+      state.history = upsertBucket(retentionFilter(state.history, HISTORY_RETENTION_MS), point);
+      saveHistory(state.history);
+      renderCharts();
+    }
+
+    function scheduleQuarterHour() {
+      if (state.fifteenInterval) clearInterval(state.fifteenInterval);
+      const now = new Date();
+      const next = floorToBucket(new Date(now.getTime() + BUCKET_MINUTES * 60000));
+      const delay = +next - +now;
+      setTimeout(() => {
+        addHistoryPointFromCurrent();
+        state.fifteenInterval = setInterval(addHistoryPointFromCurrent, BUCKET_MINUTES * 60 * 1000);
+      }, delay);
+    }
+
+    async function tryFetchServerHistory() {
+      try {
+        const res = await getJSON('/history');
+        if (Array.isArray(res)) {
+          const sanitized = res
+            .map(p => ({ t: +p.t, temp: +p.temp, hum: +p.hum, rain: +p.rain || 0 }))
+            .filter(p => Number.isFinite(p.t) && Number.isFinite(p.temp) && Number.isFinite(p.hum));
+          state.history = retentionFilter(sanitized, HISTORY_RETENTION_MS);
+          saveHistory(state.history);
+          renderCharts();
+        }
+      } catch (e) { /* không có API /history thì bỏ qua */ }
+    }
+
+    // ===== Stats & Trends =====
+    function renderStats(){
+      const T = Number(state.current?.mTem ?? state.current?.temp);
+      const H = Number(state.current?.mHum ?? state.current?.hum);
+      const hi = heatIndexC(T, H);
+      const dp = dewPointC(T, H);
+      $('#stat-heat-index').textContent = Number.isFinite(hi) ? `${round1(hi)} °C` : '--';
+      $('#stat-dew-point').textContent  = Number.isFinite(dp) ? `${round1(dp)} °C` : '--';
+
+      // last rain from events
+      const ev = loadEvents().filter(e=>/mưa/i.test(e.title)).pop();
+      $('#stat-last-rain').textContent = ev ? fmtDateTime(ev.t) : '—';
+
+      // continuous drying if state=open
+      const currState = String(state.current?.mState ?? state.current?.state ?? '').toLowerCase();
+      if (currState === 'open'){
+        const events = loadEvents();
+        const lastOpen = [...events].reverse().find(e=>/Giàn đang phơi/.test(e.title));
+        const since = lastOpen ? (Date.now() - lastOpen.t) : 0;
+        $('#stat-drying').textContent = formatDuration(since);
+      } else {
+        $('#stat-drying').textContent = '—';
+      }
+
+      $('#stat-conn').textContent = state.connOk ? 'OK' : 'Mất kết nối';
+    }
+
+    function setTrend(elId, diff, unit){
+      const el = document.getElementById(elId);
+      if (!el) return;
+      if (diff == null) { el.textContent = '--'; el.className = 'mt-1 text-xs text-slate-500'; return; }
+      if (diff > 0) { el.textContent = `↑ +${round1(diff)}${unit}`; el.className = 'mt-1 text-xs text-rose-600'; }
+      else if (diff < 0) { el.textContent = `↓ ${round1(diff)}${unit}`; el.className = 'mt-1 text-xs text-emerald-600'; }
+      else { el.textContent = `→ 0${unit}`; el.className = 'mt-1 text-xs text-slate-500'; }
+    }
+    function renderTrends(){
+      const currTemp = Number(state.current?.mTem ?? state.current?.temp);
+      const currHum  = Number(state.current?.mHum ?? state.current?.hum);
+      const prev = state.history?.length ? state.history[state.history.length - 1] : null;
+      const prevTemp = prev ? Number(prev.temp) : NaN;
+      const prevHum  = prev ? Number(prev.hum)  : NaN;
+      const dT = (Number.isFinite(currTemp) && Number.isFinite(prevTemp)) ? (currTemp - prevTemp) : null;
+      const dH = (Number.isFinite(currHum)  && Number.isFinite(prevHum))  ? (currHum - prevHum)  : null;
+      setTrend('temp-trend', dT, '°C');
+      setTrend('hum-trend', dH, '%');
+    }
+
+    // ===== Charts =====
+    let chartTempHum, chartRain;
+
+    function ensureCharts() {
+      if (!chartTempHum) {
+        const ctx = document.getElementById('chart-temp-hum');
+        chartTempHum = new Chart(ctx, {
+          type: 'line',
+          data: { datasets: [
+            { label: 'Nhiệt độ (°C)', data: [], yAxisID: 'y1', tension: 0.25, pointRadius: 0 },
+            { label: 'Độ ẩm (%)', data: [], yAxisID: 'y2', tension: 0.25, pointRadius: 0 }
+          ]},
+          options: {
+            maintainAspectRatio: false,
+            interaction: { intersect: false, mode: 'index' },
+            scales: {
+              x: { type: 'time', time: { unit: 'hour', tooltipFormat: 'dd/MM HH:mm' } },
+              y1: { position: 'left', title: { display: true, text: '°C' } },
+              y2: { position: 'right', title: { display: true, text: '%' }, min: 0, max: 100, grid: { drawOnChartArea: false } },
+            },
+            plugins: { legend: { display: true } }
+          }
+        });
+      }
+      if (!chartRain) {
+        const ctx2 = document.getElementById('chart-rain');
+        chartRain = new Chart(ctx2, {
+          type: 'bar',
+          data: { datasets: [ { label: 'Mưa (0/1)', data: [], yAxisID: 'y', barPercentage: 1.0, categoryPercentage: 1.0 } ] },
+          options: {
+            maintainAspectRatio: false,
+            scales: {
+              x: { type: 'time', time: { unit: 'hour', tooltipFormat: 'dd/MM HH:mm' } },
+              y: { min: 0, max: 1, ticks: { stepSize: 1 } }
+            },
+            plugins: { legend: { display: false } }
+          }
+        });
+      }
+    }
+
+    function applyRangeFilter(data, rangeVal) {
+      const now = Date.now();
+      let spanMs = HISTORY_RETENTION_MS;
+      if (rangeVal === '24h') spanMs = 24 * 60 * 60 * 1000;
+      else if (rangeVal === '72h') spanMs = 3 * 24 * 60 * 60 * 1000;
+      else if (rangeVal === '7d') spanMs = 7 * 24 * 60 * 60 * 1000;
+      const minT = now - spanMs;
+      return data.filter(p => p.t >= minT);
+    }
+
+    function renderCharts() {
+      ensureCharts();
+      const rangeVal = $('#range-select').value;
+      const data = applyRangeFilter(state.history, rangeVal);
+      chartTempHum.data.datasets[0].data = data.map(p => ({ x: p.t, y: p.temp }));
+      chartTempHum.data.datasets[1].data = data.map(p => ({ x: p.t, y: p.hum }));
+      chartTempHum.update('none');
+      chartRain.data.datasets[0].data = data.map(p => ({ x: p.t, y: p.rain }));
+      chartRain.update('none');
+    }
+
+    // ===== Timeline render (feature #8) =====
+    function renderTimeline(){
+      const host = $('#timeline');
+      const events = loadEvents().slice(-50).reverse(); // newest first
+      if (!events.length){ host.innerHTML = '<div class="text-slate-500 text-sm">Chưa có sự kiện.</div>'; return; }
+      host.innerHTML = events.map(e => {
+        const icon = e.type==='success' ? '🟢' : e.type==='warning' ? '⚠️' : 'ℹ️';
+        return `<div class="py-2 flex items-start gap-3">
+          <div class="text-lg leading-none">${icon}</div>
+          <div>
+            <div class="text-sm font-medium">${e.title}</div>
+            <div class="text-xs text-slate-500">${fmtDateTime(e.t)}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+
+    // ===== Scheduler (NEW) =====
+    const timers = new Map(); // id -> timeoutId
+
+    function loadSchedules(){
+      try {
+        const raw = localStorage.getItem(SCHEDULES_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return arr.map(s => ({...s, t:+s.t, createdAt:+s.createdAt}));
+      } catch(e){ return []; }
+    }
+    function saveSchedules(arr){
+      try { localStorage.setItem(SCHEDULES_KEY, JSON.stringify(arr)); } catch(e){}
+    }
+    function formatAction(a){ return a==='open' ? 'Phơi (Mở)' : 'Thu (Đóng)'; }
+
+    function renderScheduleList(){
+      const host = $('#schedule-list');
+      const list = loadSchedules().sort((a,b)=>a.t-b.t);
+      if (!list.length){ host.innerHTML = '<div class="text-sm text-slate-500">Chưa có hẹn giờ nào.</div>'; return; }
+      host.innerHTML = list.map(s => {
+        const status = s.fired ? '<span class="px-2 py-0.5 text-[11px] rounded-full bg-slate-100 text-slate-600">Đã chạy</span>'
+                     : (s.enabled ? '<span class="px-2 py-0.5 text-[11px] rounded-full bg-emerald-50 text-emerald-700">Đang bật</span>'
+                                  : '<span class="px-2 py-0.5 text-[11px] rounded-full bg-slate-50 text-slate-500">Tắt</span>');
+        return `<div class="py-2 flex items-center justify-between text-sm">
+          <div>
+            <div class="font-medium">${formatAction(s.action)}</div>
+            <div class="text-slate-500">${fmtDateTime(s.t)}</div>
+          </div>
+          <div class="flex items-center gap-2">
+            ${status}
+            <label class="inline-flex items-center gap-1 cursor-pointer select-none">
+              <input type="checkbox" data-id="${s.id}" class="sched-toggle" ${s.enabled? 'checked':''} />
+              <span class="text-xs">Bật</span>
+            </label>
+            <button class="sched-run-now px-2 py-1 text-xs rounded-lg bg-slate-100 hover:bg-slate-200" data-id="${s.id}">Chạy ngay</button>
+            <button class="sched-delete px-2 py-1 text-xs rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100" data-id="${s.id}">Huỷ</button>
+          </div>
+        </div>`;
+      }).join('');
+
+      // Wire actions
+      $$('.sched-delete').forEach(btn=> btn.addEventListener('click', ()=> deleteSchedule(btn.dataset.id)));
+      $$('.sched-toggle').forEach(ch=> ch.addEventListener('change', ()=> toggleScheduleEnabled(ch.dataset.id, ch.checked)));
+      $$('.sched-run-now').forEach(btn=> btn.addEventListener('click', ()=> runScheduleNow(btn.dataset.id)));
+    }
+
+    function makeId(){ return (crypto?.randomUUID?.() || ('id_'+Math.random().toString(36).slice(2))); }
+
+    function addSchedule(ts, action){
+      const list = loadSchedules();
+      const item = { id: makeId(), t: ts, action, enabled: true, fired: false, createdAt: Date.now() };
+      list.push(item);
+      saveSchedules(list);
+      armAllSchedules();
+      renderScheduleList();
+      showToast('Đã thêm hẹn giờ','success');
+    }
+
+    function deleteSchedule(id){
+      const list = loadSchedules().filter(s=>s.id!==id);
+      saveSchedules(list);
+      disarm(id);
+      renderScheduleList();
+      showToast('Đã xoá hẹn giờ','info');
+    }
+
+    function toggleScheduleEnabled(id, enabled){
+      const list = loadSchedules();
+      const idx = list.findIndex(s=>s.id===id);
+      if (idx>=0){ list[idx].enabled = enabled; }
+      saveSchedules(list);
+      if (enabled) arm(list[idx]); else disarm(id);
+      renderScheduleList();
+    }
+
+    function runScheduleNow(id){
+      const list = loadSchedules();
+      const item = list.find(s=>s.id===id);
+      if (!item) return;
+      triggerSchedule(item);
+    }
+
+    function disarm(id){
+      const t = timers.get(id);
+      if (t){ clearTimeout(t); timers.delete(id); }
+    }
+
+    function arm(item){
+      disarm(item.id);
+      if (!item.enabled || item.fired) return;
+      const now = Date.now();
+      const delay = item.t - now;
+      if (delay <= 0){ // late -> handle by checker
+        return;
+      }
+      const timeoutId = setTimeout(()=> triggerSchedule(item), Math.min(delay, 0x7FFFFFFF));
+      timers.set(item.id, timeoutId);
+    }
+
+    function armAllSchedules(){
+      timers.forEach((_, id)=> disarm(id));
+      const list = loadSchedules();
+      list.forEach(arm);
+    }
+
+    function updateSchedule(item){
+      const list = loadSchedules();
+      const idx = list.findIndex(s=>s.id===item.id);
+      if (idx>=0){ list[idx] = item; saveSchedules(list); }
+    }
+
+    function triggerSchedule(item){
+      // Double-check window focus/time drift
+      const now = Date.now();
+      if (item.fired){ return; }
+      if (now - item.t > 6 * 60 * 60 * 1000){ // quá 6h thì không chạy để an toàn
+        item.fired = true; updateSchedule(item); renderScheduleList();
+        showToast('Bỏ qua hẹn giờ quá hạn (>6h).','warning');
+        return;
+      }
+      // Send command
+      sendCommand(item.action);
+      pushEvent({ t: now, type: 'info', title: `Hẹn giờ: gửi lệnh ${formatAction(item.action)}` }, { toast:true });
+      item.fired = true; updateSchedule(item);
+      disarm(item.id);
+      renderScheduleList();
+    }
+
+    // Periodic checker for missed schedules (every 60s)
+    setInterval(()=>{
+      const list = loadSchedules();
+      const now = Date.now();
+      list.forEach(item => {
+        if (!item.enabled || item.fired) return;
+        if (now >= item.t){ triggerSchedule(item); }
+      });
+    }, 60*1000);
+
+    function clearPastSchedules(){
+      const list = loadSchedules();
+      const keep = list.filter(s => !s.fired || (Date.now()-s.t) < (24*60*60*1000));
+      saveSchedules(keep);
+      armAllSchedules();
+      renderScheduleList();
+      showToast('Đã dọn lịch cũ','info');
+    }
+
+    // ===== Navigation =====
+    function setActivePage(id) {
+      $$('.page').forEach(p => p.classList.remove('active'));
+      $('#' + id).classList.add('active');
+      $$('.nav-btn').forEach(btn => {
+        const isActive = btn.dataset.target === id;
+        btn.classList.toggle('bg-slate-900', isActive);
+        btn.classList.toggle('text-white', isActive);
+        btn.classList.toggle('bg-slate-200', !isActive);
+      });
+      if (id === 'page-history') { renderCharts(); renderTimeline(); }
+    }
+
+    // ===== Init =====
+    window.addEventListener('DOMContentLoaded', () => {
+      // sidebar labels
+      $('#server-label').textContent = serverURL.replace(/^https?:\/\//, '');
+      if (location.protocol === 'https:' && serverURL.startsWith('http:')) {
+        $('#https-warning').classList.remove('hidden');
+      }
+
+      // nav
+      $$('.nav-btn').forEach(btn => btn.addEventListener('click', () => setActivePage(btn.dataset.target)));
+
+      // buttons
+      $('#btn-open').addEventListener('click', () => sendCommand('open'));
+      $('#btn-close').addEventListener('click', () => sendCommand('close'));
+      $('#btn-auto').addEventListener('click', () => setMode('auto'));
+      $('#btn-manual').addEventListener('click', () => setMode('manual'));
+      $('#range-select').addEventListener('change', renderCharts);
+      $('#btn-clear-events').addEventListener('click', () => { localStorage.setItem(EVENTS_KEY, '[]'); renderTimeline(); showToast('Đã xoá timeline','info'); });
+
+      // Scheduler wires
+      $('#btn-add-schedule').addEventListener('click', () => {
+        const dt = $('#sched-dt').value;
+        const action = $('#sched-action').value;
+        const ts = dt ? new Date(dt).getTime() : NaN;
+        if (!Number.isFinite(ts)) { showToast('Vui lòng nhập thời gian hợp lệ','warning'); return; }
+        if (ts <= Date.now() - 30*1000) { showToast('Thời gian đã qua. Chọn thời điểm trong tương lai.','warning'); return; }
+        addSchedule(ts, action);
+        $('#sched-dt').value = '';
+      });
+      $('#btn-clear-past-schedules').addEventListener('click', clearPastSchedules);
+// Save line length UI
+const _inpLine = document.getElementById('line-length-mm');
+const _btnSave = document.getElementById('btn-save-config');
+if (_inpLine && _btnSave) {
+  _btnSave.addEventListener('click', saveLineLength);
+  _inpLine.addEventListener('input', () => setSaveBtnState(false)); // sửa giá trị -> về lại "Lưu cài đặt"
+}
+
+
+      // history bootstrap
+      state.history = retentionFilter(loadHistory(), HISTORY_RETENTION_MS);
+      tryFetchServerHistory();
+      renderCharts();
+      scheduleQuarterHour();
+
+      // timeline bootstrap
+      renderTimeline();
+
+      // scheduler bootstrap
+      armAllSchedules();
+      renderScheduleList();
+
+      // current data loop
+      fetchDataLoop();
+    });
+  </script>
+</body>
+</html>

@@ -64,11 +64,6 @@ The prototype features an **ESP32 DevKit** on a custom PCB carrier, connected to
   <img src="Docs/Images/system_diagram.jpg" width="85%" alt="System architecture"/>
 </p>
 
-```
-[ESP32 + Sensors] --WiFi/MQTT--> [MQTT Broker] <--MQTT--> [Node.js Server]
-       |                                                          |
- [Stepper Motor]                                       [Web Dashboard (HTTP/WS)]
-```
 
 - **ESP32 publishes** sensor telemetry to `/data` topic every few seconds
 - **ESP32 subscribes** to `/command`, `/mode`, `/config` for remote control
@@ -143,16 +138,6 @@ Navigate to `http://<server-ip>:3000` in your browser.
 ├── Server/                        # Node.js backend (Express + MQTT)
 ├── Web_Client/                    # Web dashboard (HTML/CSS/JS)
 └── README.md
-```
 
----
 
-## 👥 Team
 
-**Nhóm 06** — Embedded Systems & IoT Project
-
----
-
-## 📄 License
-
-This project is developed for educational purposes.
